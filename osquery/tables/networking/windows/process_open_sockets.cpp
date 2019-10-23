@@ -5,11 +5,35 @@
  *  This source code is licensed in accordance with the terms specified in
  *  the LICENSE file found in the root directory of this source tree.
  */
+#include <string>
+#include <vector>
 
 #include <osquery/logger.h>
 #include <osquery/tables.h>
 
 #include "win_sockets.h"
+
+namespace {
+const std::vector<std::string> winTcpStates = {
+    "UNKNOWN",
+    "CLOSED",
+    "LISTEN",
+    "SYN_SENT",
+    "SYN_RCVD",
+    "ESTABLISHED",
+    "FIN_WAIT1",
+    "FIN_WAIT2",
+    "CLOSE_WAIT",
+    "CLOSING",
+    "LAST_ACK",
+    "TIME_WAIT",
+    "DELETE_TCB",
+};
+
+std::string tcpStateString(const DWORD state) {
+  return state < winTcpStates.size() ? winTcpStates[state] : "UNKNOWN";
+}
+}
 
 namespace osquery {
 namespace tables {
@@ -117,6 +141,7 @@ void WinSockets::parseSocketTable(WinSockTableType sockType,
           ntohs(static_cast<u_short>(tcpTable_->table[i].dwRemotePort)));
       r["pid"] = INTEGER(tcpTable_->table[i].dwOwningPid);
       r["family"] = INTEGER(AF_INET);
+      r["state"] = tcpStateString(tcpTable_->table[i].dwState);
       break;
     }
 
@@ -143,6 +168,7 @@ void WinSockets::parseSocketTable(WinSockTableType sockType,
           ntohs(static_cast<u_short>(tcp6Table_->table[i].dwRemotePort)));
       r["pid"] = INTEGER(tcp6Table_->table[i].dwOwningPid);
       r["family"] = INTEGER(AF_INET6);
+      r["state"] = tcpStateString(tcp6Table_->table[i].dwState);
       break;
     }
 
