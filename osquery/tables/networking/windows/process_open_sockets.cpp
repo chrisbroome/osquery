@@ -113,7 +113,9 @@ void WinSockets::parseSocketTable(WinSockTableType sockType,
   }
 
   for (size_t i = 0; i < numEntries; i++) {
-    Row r;
+    Row r{
+        {"fd", "0"}, {"socket", "0"},
+    };
     std::vector<char> localAddr(128, 0x0);
     std::vector<char> remoteAddr(128, 0x0);
 
