@@ -6,6 +6,7 @@
  *  the LICENSE file found in the root directory of this source tree.
  */
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <osquery/logger.h>
@@ -33,248 +34,181 @@ const std::vector<std::string> winTcpStates = {
 std::string tcpStateString(const DWORD state) {
   return state < winTcpStates.size() ? winTcpStates[state] : "UNKNOWN";
 }
+
+std::string portString(const DWORD dwPort) {
+  return std::to_string(ntohs(static_cast<u_short>(dwPort)));
+}
+
+std::string inet4AddressString(const DWORD dwAddr) {
+  std::vector<char> addr(128, 0x0);
+  auto retVal = InetNtopA(AF_INET, &dwAddr, addr.data(), addr.size());
+  if (retVal == nullptr) {
+    TLOG << "Error converting network local address to string: "
+         << WSAGetLastError();
+  }
+  return addr.data();
+}
+
+std::string inet6AddressString(const UCHAR* ucAddr) {
+  std::vector<char> addr(128, 0x0);
+  auto retVal = InetNtopA(AF_INET6, ucAddr, addr.data(), addr.size());
+  if (retVal == nullptr) {
+    TLOG << "Error converting network local address to string: "
+         << WSAGetLastError();
+  }
+  return addr.data();
+}
+
+DWORD _winGetTcpOnwerPidTable(void *pSockTable, unsigned long* buffsize, unsigned long family) {
+  return GetExtendedTcpTable(pSockTable,
+                             reinterpret_cast<PULONG>(buffsize),
+                             true,
+                             family,
+                             TCP_TABLE_OWNER_PID_ALL,
+                             0);
+}
+
+DWORD _winGetUdpOnwerPidTable(void* pSockTable, unsigned long* buffsize, unsigned long family) {
+  return GetExtendedUdpTable(pSockTable,
+                             reinterpret_cast<PULONG>(buffsize),
+                             true,
+                             family,
+                             UDP_TABLE_OWNER_PID,
+                             0);
+}
+
 }
 
 namespace osquery {
 namespace tables {
 
-WinSockets::WinSockets() {
-  auto pSockTable = allocateSocketTable(IPPROTO_TCP, AF_INET);
-  if (status_.ok()) {
-    tcpTable_ = static_cast<MIB_TCPTABLE_OWNER_PID*>(pSockTable);
-  } else {
-    TLOG << "Error allocating the TCP IPv4 socket table";
-    return;
+void* allocateTcpTable(unsigned long family) {
+  unsigned long buffsize = 0;
+  void* pSockTable = nullptr;
+
+  // in order to know how big of a buffer to allocate, you first try to get a table with a buffer of size 0
+  const auto bufferSizeRet = _winGetTcpOnwerPidTable(pSockTable, &buffsize, family);
+  if (bufferSizeRet == ERROR_INSUFFICIENT_BUFFER) {
+    // when the buffer isn't big enough, GetExtendedTcpTable returns the correct buffer size through the buffsize parameter
+    // so use that to allocate a new buffer
+    pSockTable = static_cast<void*>(malloc(buffsize));
+    if (pSockTable == nullptr) {
+      return nullptr;
+    }
+  }
+  const auto tableRet = _winGetTcpOnwerPidTable(pSockTable, &buffsize, family);
+  if (tableRet != NO_ERROR) {
+    return nullptr;
   }
 
-  pSockTable = allocateSocketTable(IPPROTO_TCP, AF_INET6);
-  if (status_.ok()) {
-    tcp6Table_ = static_cast<MIB_TCP6TABLE_OWNER_PID*>(pSockTable);
-  } else {
-    TLOG << "Error allocating the TCP IPv6 socket table";
-    return;
-  }
-
-  pSockTable = allocateSocketTable(IPPROTO_UDP, AF_INET);
-  if (status_.ok()) {
-    udpTable_ = static_cast<MIB_UDPTABLE_OWNER_PID*>(pSockTable);
-  } else {
-    TLOG << "Error allocating the UDP IPv4 socket table";
-    return;
-  }
-
-  pSockTable = allocateSocketTable(IPPROTO_UDP, AF_INET6);
-  if (status_.ok()) {
-    udp6Table_ = static_cast<MIB_UDP6TABLE_OWNER_PID*>(pSockTable);
-  } else {
-    TLOG << "Error allocating the UDP IPv6 socket table";
-    return;
-  }
+  return pSockTable;
 }
 
-WinSockets::~WinSockets() {
-  if (tcpTable_ != nullptr) {
-    free(tcpTable_);
-    tcpTable_ = nullptr;
+void* allocateUdpTable(unsigned long family) {
+  unsigned long buffsize = 0;
+  void* pSockTable = nullptr;
+  const auto bufferSizeRet = _winGetUdpOnwerPidTable(pSockTable, &buffsize, family);
+  if (bufferSizeRet == ERROR_INSUFFICIENT_BUFFER) {
+    pSockTable = static_cast<void*>(malloc(buffsize));
+    if (pSockTable == nullptr) {
+      return nullptr;
+    }
   }
-  if (tcp6Table_ != nullptr) {
-    free(tcp6Table_);
-    tcp6Table_ = nullptr;
+  const auto tableRet = _winGetUdpOnwerPidTable(pSockTable, &buffsize, family);
+  if (tableRet != NO_ERROR) {
+    return nullptr;
   }
-  if (udpTable_ != nullptr) {
-    free(udpTable_);
-    udpTable_ = nullptr;
+  return pSockTable;
+}
+
+Row parseTcpSocketTableRow(const MIB_TCPROW_OWNER_PID& entry) {
+  Row r;
+  r["protocol"] = INTEGER(IPPROTO_TCP);
+  r["local_address"] = inet4AddressString(entry.dwLocalAddr);
+  r["local_port"] = portString(entry.dwLocalPort);
+  r["remote_address"] = inet4AddressString(entry.dwRemoteAddr);
+  r["remote_port"] = portString(entry.dwRemotePort);
+  r["pid"] = INTEGER(entry.dwOwningPid);
+  r["family"] = INTEGER(AF_INET);
+  r["state"] = tcpStateString(entry.dwState);
+  r["fd"] = "0";
+  r["socket"] = "0";
+  return r;
+}
+
+Row parseTcp6SocketTableRow(const MIB_TCP6ROW_OWNER_PID& entry) {
+  Row r;
+  r["protocol"] = INTEGER(IPPROTO_TCP);
+  r["local_address"] = inet6AddressString(entry.ucLocalAddr);
+  r["local_port"] = portString(entry.dwLocalPort);
+  r["remote_address"] = inet6AddressString(entry.ucRemoteAddr);
+  r["remote_port"] = portString(entry.dwRemotePort);
+  r["pid"] = INTEGER(entry.dwOwningPid);
+  r["family"] = INTEGER(AF_INET6);
+  r["state"] = tcpStateString(entry.dwState);
+  r["fd"] = "0";
+  r["socket"] = "0";
+  return r;
+}
+
+Row parseUdpSocketTableRow(const MIB_UDPROW_OWNER_PID& entry) {
+  Row r;
+  r["protocol"] = INTEGER(IPPROTO_UDP);
+  r["local_address"] = inet4AddressString(entry.dwLocalAddr);
+  r["local_port"] = portString(entry.dwLocalPort);
+  r["remote_address"] = "0";
+  r["remote_port"] = INTEGER(0);
+  r["pid"] = INTEGER(entry.dwOwningPid);
+  r["family"] = INTEGER(AF_INET);
+  r["state"] = "";
+  r["fd"] = "0";
+  r["socket"] = "0";
+  return r;
+}
+
+Row parseUdp6SocketTableRow(const MIB_UDP6ROW_OWNER_PID& entry) {
+  Row r;
+  r["protocol"] = INTEGER(IPPROTO_UDP);
+  r["local_address"] = inet6AddressString(entry.ucLocalAddr);
+  r["local_port"] = portString(entry.dwLocalPort);
+  r["remote_address"] = "0";
+  r["remote_port"] = INTEGER(0);
+  r["pid"] = INTEGER(entry.dwOwningPid);
+  r["family"] = INTEGER(AF_INET6);
+  r["state"] = "";
+  r["fd"] = "0";
+  r["socket"] = "0";
+  return r;
+}
+
+template<typename TTable, typename TRow>
+QueryData parseSocketTable(const TTable& table, Row (parseFunc)(const TRow &)) {
+  QueryData results;
+  const auto size = table.size();
+  for (size_t i = 0; i < size; ++i) {
+    results.push_back(std::move(parseFunc(table[i])));
   }
-  if (udp6Table_ != nullptr) {
-    free(udp6Table_);
-    udp6Table_ = nullptr;
-  }
+  return results;
 }
 
 void WinSockets::parseSocketTable(WinSockTableType sockType,
                                   QueryData& results) {
-  unsigned int numEntries;
+  QueryData res;
   switch (sockType) {
   case WinSockTableType::tcp:
-    numEntries = tcpTable_->dwNumEntries;
+    res = tables::parseSocketTable(tcpTable_, parseTcpSocketTableRow);
     break;
   case WinSockTableType::tcp6:
-    numEntries = tcp6Table_->dwNumEntries;
+    res = tables::parseSocketTable(tcp6Table_, parseTcp6SocketTableRow);
     break;
   case WinSockTableType::udp:
-    numEntries = udpTable_->dwNumEntries;
+    res = tables::parseSocketTable(udpTable_, parseUdpSocketTableRow);
     break;
   case WinSockTableType::udp6:
-    numEntries = udp6Table_->dwNumEntries;
-    break;
-  default:
-    numEntries = 0;
+    res = tables::parseSocketTable(udp6Table_, parseUdp6SocketTableRow);
     break;
   }
-
-  for (size_t i = 0; i < numEntries; i++) {
-    Row r{
-        {"fd", "0"}, {"socket", "0"},
-    };
-    std::vector<char> localAddr(128, 0x0);
-    std::vector<char> remoteAddr(128, 0x0);
-
-    switch (sockType) {
-    case WinSockTableType::tcp: {
-      r["protocol"] = INTEGER(IPPROTO_TCP);
-      auto tcpLocalAddr = tcpTable_->table[i].dwLocalAddr;
-      auto retVal =
-          InetNtopA(AF_INET, &tcpLocalAddr, localAddr.data(), localAddr.size());
-      if (retVal == nullptr) {
-        TLOG << "Error converting network local address to string: "
-             << WSAGetLastError();
-      }
-      r["local_port"] =
-          INTEGER(ntohs(static_cast<u_short>(tcpTable_->table[i].dwLocalPort)));
-      auto tcpRemoteAddr = tcpTable_->table[i].dwRemoteAddr;
-      retVal = InetNtopA(
-          AF_INET, &tcpRemoteAddr, remoteAddr.data(), remoteAddr.size());
-      if (retVal == nullptr) {
-        TLOG << "Error converting network remote address to string: "
-             << WSAGetLastError();
-      }
-      r["remote_address"] = remoteAddr.data();
-      r["remote_port"] = INTEGER(
-          ntohs(static_cast<u_short>(tcpTable_->table[i].dwRemotePort)));
-      r["pid"] = INTEGER(tcpTable_->table[i].dwOwningPid);
-      r["family"] = INTEGER(AF_INET);
-      r["state"] = tcpStateString(tcpTable_->table[i].dwState);
-      break;
-    }
-
-    case WinSockTableType::tcp6: {
-      r["protocol"] = INTEGER(IPPROTO_TCP);
-      auto tcp6LocalAddr = tcp6Table_->table[i].ucLocalAddr;
-      auto retVal = InetNtopA(
-          AF_INET6, tcp6LocalAddr, localAddr.data(), localAddr.size());
-      if (retVal == nullptr) {
-        TLOG << "Error converting network local address to string: "
-             << WSAGetLastError();
-      }
-      r["local_port"] = INTEGER(
-          ntohs(static_cast<u_short>(tcp6Table_->table[i].dwLocalPort)));
-      auto tcp6RemoteAddr = tcp6Table_->table[i].ucRemoteAddr;
-      retVal = InetNtopA(
-          AF_INET6, tcp6RemoteAddr, remoteAddr.data(), remoteAddr.size());
-      if (retVal == nullptr) {
-        TLOG << "Error converting network remote address to string: "
-             << WSAGetLastError();
-      }
-      r["remote_address"] = remoteAddr.data();
-      r["remote_port"] = INTEGER(
-          ntohs(static_cast<u_short>(tcp6Table_->table[i].dwRemotePort)));
-      r["pid"] = INTEGER(tcp6Table_->table[i].dwOwningPid);
-      r["family"] = INTEGER(AF_INET6);
-      r["state"] = tcpStateString(tcp6Table_->table[i].dwState);
-      break;
-    }
-
-    case WinSockTableType::udp: {
-      r["protocol"] = INTEGER(IPPROTO_UDP);
-      auto udpLocalAddr = udpTable_->table[i].dwLocalAddr;
-      auto retVal =
-          InetNtopA(AF_INET, &udpLocalAddr, localAddr.data(), localAddr.size());
-      if (retVal == nullptr) {
-        TLOG << "Error converting network local address to string: "
-             << WSAGetLastError();
-      }
-      r["local_port"] =
-          INTEGER(ntohs(static_cast<u_short>(udpTable_->table[i].dwLocalPort)));
-      r["remote_address"] = "0";
-      r["remote_port"] = INTEGER(0);
-      r["pid"] = INTEGER(udpTable_->table[i].dwOwningPid);
-      r["family"] = INTEGER(AF_INET);
-      break;
-    }
-
-    case WinSockTableType::udp6: {
-      r["protocol"] = INTEGER(IPPROTO_UDP);
-      auto udp6LocalAddr = udp6Table_->table[i].ucLocalAddr;
-      auto retVal = InetNtopA(
-          AF_INET6, udp6LocalAddr, localAddr.data(), localAddr.size());
-      if (retVal == nullptr) {
-        TLOG << "Error converting network local address to string: "
-             << WSAGetLastError();
-      }
-      r["local_port"] = INTEGER(
-          ntohs(static_cast<u_short>(udp6Table_->table[i].dwLocalPort)));
-      r["remote_address"] = "0";
-      r["remote_port"] = INTEGER(0);
-      r["pid"] = INTEGER(udp6Table_->table[i].dwOwningPid);
-      r["family"] = INTEGER(AF_INET6);
-      break;
-    }
-    default:
-      break;
-    }
-
-    r["local_address"] = localAddr.data();
-    results.push_back(r);
-  }
-}
-
-void* WinSockets::allocateSocketTable(unsigned long protocol,
-                                      unsigned long family) {
-  unsigned long ret = 0;
-  unsigned long buffsize = 0;
-  void* pSockTable = nullptr;
-
-  /// Allocate the TCP Socket Tables
-  if (protocol == IPPROTO_TCP) {
-    ret = GetExtendedTcpTable(
-        pSockTable, &buffsize, true, family, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (ret == ERROR_INSUFFICIENT_BUFFER) {
-      pSockTable = static_cast<void*>(malloc(buffsize));
-      if (pSockTable == nullptr) {
-        status_ = Status(
-            1, "Unable to allocate sufficient memory for the TCP socket table");
-      }
-    }
-    ret = GetExtendedTcpTable(pSockTable,
-                              reinterpret_cast<PULONG>(&buffsize),
-                              true,
-                              family,
-                              TCP_TABLE_OWNER_PID_ALL,
-                              0);
-    if (ret != NO_ERROR) {
-      status_ = Status(1,
-                       "Error retrieving the socket table: ( " +
-                           std::to_string(GetLastError()) + " )");
-    }
-  }
-  /// Allocate the UDP Socket Tables
-  else {
-    ret = GetExtendedUdpTable(pSockTable,
-                              reinterpret_cast<PULONG>(&buffsize),
-                              true,
-                              family,
-                              UDP_TABLE_OWNER_PID,
-                              0);
-    if (ret == ERROR_INSUFFICIENT_BUFFER) {
-      pSockTable = static_cast<void*>(malloc(buffsize));
-      if (pSockTable == nullptr) {
-        status_ = Status(
-            1, "Unable to allocate sufficient memory for the UDP socket table");
-      }
-    }
-    ret = GetExtendedUdpTable(pSockTable,
-                              reinterpret_cast<PULONG>(&buffsize),
-                              true,
-                              family,
-                              UDP_TABLE_OWNER_PID,
-                              0);
-    if (ret != NO_ERROR) {
-      status_ = Status(1,
-                       "Error retrieving the socket table: ( " +
-                           std::to_string(GetLastError()) + " )");
-    }
-  }
-  return pSockTable;
+  results.insert(results.end(), res.begin(), res.end());
 }
 
 QueryData genOpenSockets(QueryContext& context) {
@@ -282,11 +216,8 @@ QueryData genOpenSockets(QueryContext& context) {
   WinSockets sockTable;
 
   sockTable.parseSocketTable(WinSockTableType::tcp, results);
-
   sockTable.parseSocketTable(WinSockTableType::tcp6, results);
-
   sockTable.parseSocketTable(WinSockTableType::udp, results);
-
   sockTable.parseSocketTable(WinSockTableType::udp6, results);
 
   return results;
