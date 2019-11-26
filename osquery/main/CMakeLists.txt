@@ -91,6 +91,7 @@ function(generateOsqueryMain)
       plugins_logger_awsfirehose
       plugins_logger_awskinesis
       plugins_logger_awslogforwarder
+      plugins_logger_kafkaproducer
       plugins_logger_windowseventlog
     )
   endif()

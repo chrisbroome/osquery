@@ -145,7 +145,7 @@ endfunction()
 
 function(generatePluginsLoggerKafkaproducer)
 
-  if(DEFINED PLATFORM_LINUX OR DEFINED PLATFORM_MACOS)
+  if(DEFINED PLATFORM_LINUX OR DEFINED PLATFORM_MACOS OR DEFINED PLATFORM_WINDOWS)
     add_osquery_library(plugins_logger_kafkaproducer EXCLUDE_FROM_ALL
       kafka_producer.cpp
     )

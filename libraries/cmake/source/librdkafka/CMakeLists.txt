@@ -10,6 +10,8 @@ function(librdkafkaMain)
 
   add_library(thirdparty_librdkafka INTERFACE)
 
+  add_compile_definitions(thirdparty_librdkafka LIBRDKAFKA_STATICLIB)
+
   target_link_libraries(thirdparty_librdkafka INTERFACE
     thirdparty_librdkafka_c
     thirdparty_librdkafka_cxx
@@ -88,6 +90,14 @@ function(generateLibrdkafka)
 
   target_compile_definitions(thirdparty_librdkafka_c PRIVATE
     LIBRDKAFKA_GIT_VERSION=\"v1.0.1\"
+  )
+
+  target_link_libraries(thirdparty_librdkafka_c PRIVATE
+    thirdparty_zlib
+  )
+
+  target_link_libraries(thirdparty_librdkafka_c PRIVATE
+    thirdparty_zstd
   )
 
   target_link_libraries(thirdparty_librdkafka_c PUBLIC

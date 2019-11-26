@@ -13,7 +13,9 @@
 #include <osquery/remote/transports/tls.h>
 // clang-format on
 
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
 
 #include <boost/algorithm/string/find.hpp>
 
