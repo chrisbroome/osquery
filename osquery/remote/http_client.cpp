@@ -10,6 +10,14 @@
 #include <osquery/remote/http_client.h>
 
 #include <boost/asio/connect.hpp>
+namespace {
+DWORD GetCurrentHandleCount() {
+  ::GetCurrentProcess();
+  DWORD count;
+  ::GetProcessHandleCount(::GetCurrentProcess(), &count);
+  return count;
+}
+} // namespace
 
 namespace osquery {
 namespace http {
@@ -21,6 +29,9 @@ const std::string kProxyDefaultPort{"3128"};
 const long kSSLShortReadError{0x140000dbL};
 
 void Client::callNetworkOperation(std::function<void()> callback) {
+  const auto beginHandles = GetCurrentHandleCount();
+  VLOG(1) << "Client::callNetworkOperation() begin: " << beginHandles
+          << " handles";
   if (client_options_.timeout_) {
     timer_.async_wait(
         std::bind(&Client::timeoutHandler, this, std::placeholders::_1));
@@ -36,6 +47,11 @@ void Client::callNetworkOperation(std::function<void()> callback) {
       ec_ = rc;
     }
   }
+  const auto endHandles = GetCurrentHandleCount();
+  VLOG(1) << "Client::callNetworkOperation()   end: " << beginHandles
+          << " handles";
+  VLOG(1) << "Client::callNetworkOperation()  leak: "
+          << (endHandles - beginHandles) << " handles";
 }
 
 void Client::cancelTimerAndSetError(boost::system::error_code const& ec) {
@@ -66,10 +82,16 @@ bool Client::isSocketOpen() {
 }
 
 void Client::closeSocket() {
+  VLOG(1) << "Client::closeSocket() " << GetCurrentHandleCount() << " handles";
   if (isSocketOpen()) {
+    VLOG(1) << "Client::closeSocket():isSocketOpen=true";
     boost::system::error_code rc;
     sock_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, rc);
+    VLOG(1) << "sock_.shutdown(): rc: " << rc.value() << " " << rc.message()
+            << " " << GetCurrentHandleCount() << " handles";
     sock_.close(rc);
+    VLOG(1) << "sock_.close(): rc: " << rc.value() << " " << rc.message() << " "
+            << GetCurrentHandleCount() << " handles";
   }
 }
 
@@ -82,22 +104,38 @@ void Client::timeoutHandler(boost::system::error_code const& ec) {
 
 void Client::connectHandler(boost::system::error_code const& ec,
                             boost::asio::ip::tcp::endpoint const&) {
+  VLOG(1) << "Client::connectHandler() begin: " << GetCurrentHandleCount()
+          << " handles";
   cancelTimerAndSetError(ec);
+  VLOG(1) << "Client::connectHandler()   end: " << GetCurrentHandleCount()
+          << " handles";
 }
 
 void Client::resolveHandler(
     boost::system::error_code const& ec,
     boost::asio::ip::tcp::resolver::results_type results) {
+  VLOG(1) << "Client::resolveHandler() begin: " << GetCurrentHandleCount() << " handles";
   if (!ec) {
+    VLOG(1) << "Client::resolveHandler() begin async_connect: " << GetCurrentHandleCount()
+            << " handles";
     boost::asio::async_connect(sock_,
                                results,
                                std::bind(&Client::connectHandler,
                                          this,
                                          std::placeholders::_1,
                                          std::placeholders::_2));
+    VLOG(1) << "Client::resolveHandler()   end async_connect: "
+            << GetCurrentHandleCount() << " handles";
   } else {
+    VLOG(1) << "Client::resolveHandler() else branch ec = " << ec;
+    VLOG(1) << "Client::resolveHandler() begin cancelTimerAndSetError(): "
+            << GetCurrentHandleCount() << " handles";
     cancelTimerAndSetError(ec);
+    VLOG(1) << "Client::resolveHandler() begin cancelTimerAndSetError(): "
+            << GetCurrentHandleCount() << " handles";
   }
+  VLOG(1) << "Client::resolveHandler()   end: " << GetCurrentHandleCount()
+          << " handles";
 }
 
 void Client::handshakeHandler(boost::system::error_code const& ec) {
@@ -116,6 +154,7 @@ void Client::readHandler(boost::system::error_code const& ec, size_t) {
 }
 
 void Client::createConnection() {
+  VLOG(1) << "Client::createConnection() begin: " << GetCurrentHandleCount() << " handles";
   std::string port = (client_options_.proxy_hostname_)
                          ? kProxyDefaultPort
                          : *client_options_.remote_port_;
@@ -130,14 +169,26 @@ void Client::createConnection() {
     connect_host = connect_host.substr(0, pos);
   }
 
+  VLOG(1) << "Client::createConnection() callNetworkOperation, begin r.async_resolve: " << GetCurrentHandleCount()
+          << " handles";
   callNetworkOperation([&]() {
+    VLOG(1) << "Client::createConnection() callNetworkOperation,  begincb "
+               "r.async_resolve: "
+            << GetCurrentHandleCount() << " handles";
     r_.async_resolve(connect_host,
                      port,
                      std::bind(&Client::resolveHandler,
                                this,
                                std::placeholders::_1,
                                std::placeholders::_2));
+    VLOG(1) << "Client::createConnection() callNetworkOperation,    endcb "
+               "r.async_resolve: "
+            << GetCurrentHandleCount() << " handles";
   });
+
+  VLOG(1)
+      << "Client::createConnection() callNetworkOperation,   end r.async_resolve: "
+      << GetCurrentHandleCount() << " handles";
 
   if (ec_) {
     std::string error("Failed to connect to ");
@@ -199,6 +250,8 @@ void Client::createConnection() {
       throw std::runtime_error(rp.get().reason().data());
     }
   }
+  VLOG(1) << "Client::createConnection()   end: " << GetCurrentHandleCount()
+          << " handles";
 }
 
 void Client::encryptConnection() {
@@ -260,6 +313,8 @@ template <typename STREAM_TYPE>
 void Client::sendRequest(STREAM_TYPE& stream,
                          Request& req,
                          beast_http_response_parser& resp) {
+  VLOG(1) << "Client::sendRequest() " << GetCurrentHandleCount()
+          << " handles";
   req.target((req.remotePath()) ? *req.remotePath() : "/");
   req.version(11);
 
@@ -315,10 +370,14 @@ void Client::sendRequest(STREAM_TYPE& stream,
   }
 
   if (resp.get()["Connection"] == "close") {
+    VLOG(1) << "Client::sendRequest() response connection close: " << GetCurrentHandleCount()
+            << " handles";
     closeSocket();
   }
 
   if (!client_options_.keep_alive_) {
+    VLOG(1) << "Client::sendRequest() !client_options_.keep_alive_: "
+            << GetCurrentHandleCount() << " handles";
     closeSocket();
   }
 }

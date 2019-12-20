@@ -27,6 +27,15 @@
 #include <osquery/registry.h>
 #include <osquery/system.h>
 
+namespace {
+DWORD GetCurrentHandleCount() {
+  ::GetCurrentProcess();
+  DWORD count;
+  ::GetProcessHandleCount(::GetCurrentProcess(), &count);
+  return count;
+}
+} // namespace
+
 namespace osquery {
 
 REGISTER(KinesisLoggerPlugin, "logger", "aws_kinesis");
@@ -45,6 +54,7 @@ FLAG(bool,
 
 Status KinesisLoggerPlugin::setUp() {
   initAwsSdk();
+  LOG(INFO) << "KinesisLoggerPlugin::setUp";
   forwarder_ = std::make_shared<KinesisLogForwarder>(
       "aws_kinesis", FLAGS_aws_kinesis_period, 500);
   Status s = forwarder_->setUp();
@@ -71,6 +81,7 @@ void KinesisLoggerPlugin::init(const std::string& name,
 
 Status KinesisLogForwarder::internalSetup() {
   partition_key_ = getHostIdentifier();
+  VLOG(1) << "Partition Key: " << partition_key_;
 
   if (FLAGS_aws_kinesis_stream.empty()) {
     return Status(1, "Stream name must be specified with --aws_kinesis_stream");
@@ -84,9 +95,22 @@ Status KinesisLogForwarder::internalSetup() {
 
 KinesisLogForwarder::Outcome KinesisLogForwarder::internalSend(
     const Batch& batch) {
+
+  const auto beginHandleCount = GetCurrentHandleCount();
+  LOG(INFO) << "internalSend()  begin: " << batch.size() << " records, "
+            << beginHandleCount << " handles";
   Aws::Kinesis::Model::PutRecordsRequest request;
+  LOG(INFO) << "before request.WithStreamName().SetRecords(): "
+            << GetCurrentHandleCount();
   request.WithStreamName(FLAGS_aws_kinesis_stream).SetRecords(batch);
-  return client_->PutRecords(request);
+  LOG(INFO) << "after  request.WithStreamName().SetRecords(): "
+            << GetCurrentHandleCount();
+  auto& outcome = client_->PutRecords(request);
+  const auto endHandleCount = GetCurrentHandleCount();
+  const auto leaked = endHandleCount - beginHandleCount;
+  LOG(INFO) << "internalSend()    end: " << endHandleCount << " handles";
+  LOG(INFO) << "internalSend() leaked: " << leaked << " handles";
+  return outcome;
 }
 
 void KinesisLogForwarder::initializeRecord(
@@ -137,4 +161,4 @@ KinesisLogForwarder::Result KinesisLogForwarder::getResult(
     Outcome& outcome) const {
   return outcome.GetResult().GetRecords();
 }
-}
+} // namespace osquery

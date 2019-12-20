@@ -41,7 +41,9 @@ class AwsLogForwarder : public BufferedLogForwarder {
                              name,
                              std::chrono::seconds(log_period),
                              max_lines),
-        name_(name) {}
+        name_(name) {
+    LOG(INFO) << "AwsLogForwarder()";
+  }
 
   /// Common plugin initialization
   Status setUp() override {
@@ -50,6 +52,7 @@ class AwsLogForwarder : public BufferedLogForwarder {
       return s;
     }
 
+    LOG(INFO) << "makeAWSClient()";
     s = makeAWSClient<Client>(client_);
     if (!s.ok()) {
       return s;
@@ -90,6 +93,7 @@ class AwsLogForwarder : public BufferedLogForwarder {
 
   /// Dumps the specified batch to the given stream
   std::ostream& dumpBatch(std::ostream& stream, const Batch& batch) const {
+    LOG(INFO) << "dumpBatch";
     size_t index = 0;
 
     for (auto it = batch.begin(); it != batch.end(); it++) {
@@ -180,6 +184,8 @@ class AwsLogForwarder : public BufferedLogForwarder {
  protected:
   /// Sends a single batch
   bool sendBatch(Batch& batch, std::stringstream& status_output) {
+    LOG(INFO) << "sendBatch() begin";
+
     bool success = false;
 
     auto max_retry_count = getMaxRetryCount();
@@ -253,6 +259,7 @@ class AwsLogForwarder : public BufferedLogForwarder {
       }
     }
 
+    LOG(INFO) << "sendBatch() end";
     return success;
   }
 
